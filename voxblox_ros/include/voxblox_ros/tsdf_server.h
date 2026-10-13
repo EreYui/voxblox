@@ -65,6 +65,7 @@ class TsdfServer {
   void publishAllUpdatedTsdfVoxels();
   void publishTsdfSurfacePoints();
   void publishTsdfOccupiedNodes();
+  void publishTsdfUnknownNodes();
 
   virtual void publishSlices();
   /// Incremental update.
@@ -139,6 +140,7 @@ class TsdfServer {
   ros::Publisher surface_pointcloud_pub_;
   ros::Publisher tsdf_slice_pub_;
   ros::Publisher occupancy_marker_pub_;
+  ros::Publisher unknown_occupancy_marker_pub_;
   ros::Publisher icp_transform_pub_;
 
   /// Publish the complete map for other nodes to consume.

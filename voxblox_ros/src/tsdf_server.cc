@@ -51,6 +51,9 @@ TsdfServer::TsdfServer(const ros::NodeHandle& nh,
   occupancy_marker_pub_ =
       nh_private_.advertise<visualization_msgs::MarkerArray>("occupied_nodes",
                                                              1, true);
+  unknown_occupancy_marker_pub_ =
+      nh_private_.advertise<visualization_msgs::MarkerArray>("unknown_nodes",
+                                                             1, true);
   tsdf_slice_pub_ = nh_private_.advertise<pcl::PointCloud<pcl::PointXYZI> >(
       "tsdf_slice", 1, true);
 
@@ -309,10 +312,20 @@ void TsdfServer::processPointCloudMessageAndInsert(
   ros::WallTime start = ros::WallTime::now();
   integratePointcloud(T_G_C_refined, points_C, colors, is_freespace_pointcloud);
   ros::WallTime end = ros::WallTime::now();
+  
+  double integration_time = (end - start).toSec();
   if (verbose_) {
     ROS_INFO("Finished integrating in %f seconds, have %lu blocks.",
-             (end - start).toSec(),
+             integration_time,
              tsdf_map_->getTsdfLayer().getNumberOfAllocatedBlocks());
+  }
+  
+  // Debug: Warn if integration is taking too long
+  if (integration_time > 0.5) {
+    ROS_WARN_THROTTLE(10, 
+                     "Slow integration detected: %.3f seconds for %lu points. "
+                     "Consider reducing pointcloud_queue_size or increasing min_time_between_msgs_sec.",
+                     integration_time, points_C.size());
   }
 
   timing::Timer block_remove_timer("remove_distant_blocks");
@@ -341,11 +354,21 @@ bool TsdfServer::getNextPointcloudFromQueue(
     queue->pop();
     return true;
   } else {
+    // Debug: Log TF lookup failure details
+    ROS_WARN_THROTTLE(5, 
+                     "Failed to lookup transform from '%s' to '%s' at time %.3f (current queue size: %zu)",
+                     (*pointcloud_msg)->header.frame_id.c_str(),
+                     world_frame_.c_str(),
+                     (*pointcloud_msg)->header.stamp.toSec(),
+                     queue->size());
+    
     if (queue->size() >= kMaxQueueSize) {
       ROS_ERROR_THROTTLE(60,
                          "Input pointcloud queue getting too long! Dropping "
                          "some pointclouds. Either unable to look up transform "
-                         "timestamps or the processing is taking too long.");
+                         "timestamps or the processing is taking too long. "
+                         "Queue size: %zu, Max: %zu",
+                         queue->size(), kMaxQueueSize);
       while (queue->size() >= kMaxQueueSize) {
         queue->pop();
       }
@@ -450,6 +473,19 @@ void TsdfServer::publishTsdfOccupiedNodes() {
   occupancy_marker_pub_.publish(marker_array);
 }
 
+void TsdfServer::publishTsdfUnknownNodes() {
+  visualization_msgs::MarkerArray marker_array;
+  // Define unknown voxels as those with very low or zero observation weight.
+  auto unknown_predicate = [](const TsdfVoxel& voxel, const Point& /*coord*/) {
+    constexpr float kMinWeight = 1e-3f;
+    return voxel.weight <= kMinWeight;
+  };
+  createOccupancyBlocksFromLayer<TsdfVoxel>(
+      tsdf_map_->getTsdfLayer(), unknown_predicate, world_frame_,
+      &marker_array);
+  unknown_occupancy_marker_pub_.publish(marker_array);
+}
+
 void TsdfServer::publishSlices() {
   pcl::PointCloud<pcl::PointXYZI> pointcloud;
 
@@ -492,6 +528,7 @@ void TsdfServer::publishPointclouds() {
   publishAllUpdatedTsdfVoxels();
   publishTsdfSurfacePoints();
   publishTsdfOccupiedNodes();
+  publishTsdfUnknownNodes();
   if (publish_slices_) {
     publishSlices();
   }
